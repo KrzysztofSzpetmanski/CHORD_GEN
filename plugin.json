@@ -1,0 +1,22 @@
+{
+  "slug": "ChordGen",
+  "name": "CHORD_GEN",
+  "version": "2.0.120",
+  "license": "proprietary",
+  "brand": "KSZ",
+  "author": "Infinit",
+  "authorEmail": "",
+  "authorUrl": "",
+  "pluginUrl": "",
+  "manualUrl": "",
+  "sourceUrl": "",
+  "donateUrl": "",
+  "modules": [
+    {
+      "slug": "ChordGen",
+      "name": "CHORD_GEN",
+      "description": "Poly chord input splitter with chord type and voicing display",
+      "tags": ["Utility", "Polyphonic", "Pitch"]
+    }
+  ]
+}
