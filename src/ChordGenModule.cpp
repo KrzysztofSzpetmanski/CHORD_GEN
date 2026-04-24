@@ -475,12 +475,14 @@ struct ChordGenModule : Module {
 		SCALE_PARAM,
 		ROOT_PARAM,
 		RANGE_PARAM,
+		OCT_PARAM,
 		TYPE_PARAM,
 		NUM_PARAMS
 	};
 	enum InputIds {
 		CHORD_POLY_INPUT,
 		RANGE_CV_INPUT,
+		OCT_CV_INPUT,
 		TYPE_CV_INPUT,
 		TRIG_INPUT,
 		NUM_INPUTS
@@ -510,6 +512,7 @@ struct ChordGenModule : Module {
 	int lastScale = -1;
 	int lastRoot = -1;
 	int lastRange = -1;
+	int lastOct = -1;
 	int lastType = -1;
 
 	std::string chordTypeDisplay = "-";
@@ -522,15 +525,18 @@ struct ChordGenModule : Module {
 		configParam(SCALE_PARAM, 0.f, float(SCALE_NAMES.size() - 1), 0.f, "Scale");
 		configParam(ROOT_PARAM, 0.f, 11.f, 0.f, "Root");
 		configParam(RANGE_PARAM, 1.f, 3.f, 2.f, "Range Octaves");
+		configParam(OCT_PARAM, 0.f, 4.f, 2.f, "Start Octave");
 		configParam(TYPE_PARAM, 0.f, float(TYPE_NAMES.size() - 1), 0.f, "Chord Type");
 
 		paramQuantities[SCALE_PARAM]->snapEnabled = true;
 		paramQuantities[ROOT_PARAM]->snapEnabled = true;
 		paramQuantities[RANGE_PARAM]->snapEnabled = true;
+		paramQuantities[OCT_PARAM]->snapEnabled = true;
 		paramQuantities[TYPE_PARAM]->snapEnabled = true;
 
 		configInput(CHORD_POLY_INPUT, "Chord Degree Poly input");
 		configInput(RANGE_CV_INPUT, "Range CV");
+		configInput(OCT_CV_INPUT, "Start Octave CV");
 		configInput(TYPE_CV_INPUT, "Type CV");
 		configInput(TRIG_INPUT, "Trigger tick input");
 		configOutput(VOICE1_OUTPUT, "Voice 1 mono V/Oct");
@@ -565,6 +571,15 @@ struct ChordGenModule : Module {
 		}
 		const float raw = params[TYPE_PARAM].getValue() + cvNorm * 4.f;
 		return clampInt(int(std::round(raw)), 0, int(TYPE_NAMES.size()) - 1);
+	}
+
+	int readStartOctaveValue() {
+		float cvNorm = 0.f;
+		if (inputs[OCT_CV_INPUT].isConnected()) {
+			cvNorm = clamp(inputs[OCT_CV_INPUT].getVoltage() / 10.f, -1.f, 1.f);
+		}
+		const float raw = params[OCT_PARAM].getValue() + cvNorm * 4.f;
+		return clampInt(int(std::round(raw)), 0, 4);
 	}
 
 	int readDegreeFromPolyInput(int scaleIndex, int rootPc) {
@@ -604,9 +619,9 @@ struct ChordGenModule : Module {
 		}
 	}
 
-	void rebuildVoicing(int scaleIndex, int rootPc, int rangeValue, int typeValue, int degree) {
+	void rebuildVoicing(int scaleIndex, int rootPc, int rangeValue, int startOctave, int typeValue, int degree) {
 		const GeneratedChord chord = buildChordForDegree(scaleIndex, degree, typeValue);
-		const int tonicMidi = 60 + rootPc;
+		const int tonicMidi = startOctave * 12 + rootPc;
 		const int chordRootMidi = scaleDegreeToMidi(tonicMidi, scaleIndex, degree);
 
 		std::array<int, 4> tonePcs{};
@@ -615,11 +630,7 @@ struct ChordGenModule : Module {
 		}
 
 		const int targetSpan = rangeValue * 12;
-		int lo = 48;
-		if (havePrevVoicing) {
-			const int center = (prevVoicingMidi[0] + prevVoicingMidi[3]) / 2;
-			lo = clampInt(center - targetSpan / 2, 36, 84 - targetSpan);
-		}
+		int lo = clampInt(startOctave * 12, 0, 120 - targetSpan);
 		const int hi = lo + targetSpan;
 
 		const VoicingChoice choice = chooseBestVoicing(tonePcs, lo, hi, prevVoicingMidi, havePrevVoicing);
@@ -646,6 +657,7 @@ struct ChordGenModule : Module {
 		const int scaleIndex = readScaleIndex();
 		const int rootPc = readRootPitchClass();
 		const int rangeValue = readRangeValue();
+		const int startOctave = readStartOctaveValue();
 		const int typeValue = readTypeValue();
 
 		auto clearStateAndOutputs = [this]() {
@@ -653,6 +665,7 @@ struct ChordGenModule : Module {
 			haveVoicing = false;
 			havePrevVoicing = false;
 			lastDegree = -999;
+			lastOct = -1;
 			if (uiDivider.process()) {
 				chordTypeDisplay = "-";
 				voicingDisplay = "-";
@@ -666,11 +679,12 @@ struct ChordGenModule : Module {
 				if (degree < 0) {
 					clearStateAndOutputs();
 				} else {
-					rebuildVoicing(scaleIndex, rootPc, rangeValue, typeValue, degree);
+					rebuildVoicing(scaleIndex, rootPc, rangeValue, startOctave, typeValue, degree);
 					lastDegree = degree;
 					lastScale = scaleIndex;
 					lastRoot = rootPc;
 					lastRange = rangeValue;
+					lastOct = startOctave;
 					lastType = typeValue;
 				}
 			}
@@ -687,14 +701,16 @@ struct ChordGenModule : Module {
 				scaleIndex != lastScale ||
 				rootPc != lastRoot ||
 				rangeValue != lastRange ||
+				startOctave != lastOct ||
 				typeValue != lastType;
 
 			if (changed) {
-				rebuildVoicing(scaleIndex, rootPc, rangeValue, typeValue, degree);
+				rebuildVoicing(scaleIndex, rootPc, rangeValue, startOctave, typeValue, degree);
 				lastDegree = degree;
 				lastScale = scaleIndex;
 				lastRoot = rootPc;
 				lastRange = rangeValue;
+				lastOct = startOctave;
 				lastType = typeValue;
 			}
 		}
@@ -778,9 +794,9 @@ struct ChordGenWidget : ModuleWidget {
 		};
 		addChild(rootField);
 
-		addLabel(25.0f, 75.0f, "ON", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addParam(createParamCentered<LEDButton>(mm2px(Vec(25.0f, 83.0f)), module, ChordGenModule::ON_PARAM));
-		addChild(createLightCentered<MediumLight<WhiteLight> >(mm2px(Vec(25.0f, 83.0f)), module, ChordGenModule::ON_LIGHT));
+		addLabel(25.0f, 60.0f, "ON", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addParam(createParamCentered<LEDButton>(mm2px(Vec(25.0f, 68.0f)), module, ChordGenModule::ON_PARAM));
+		addChild(createLightCentered<MediumLight<WhiteLight> >(mm2px(Vec(25.0f, 68.0f)), module, ChordGenModule::ON_LIGHT));
 
 		// Grid-aligned placement (10mm rows/columns) for manual layout iteration.
 		addLabel(25.0f, 105.0f, "RANGE", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
@@ -793,24 +809,29 @@ struct ChordGenWidget : ModuleWidget {
 		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 98.0f)), module, ChordGenModule::TYPE_CV_INPUT));
 		addLabel(10.0f, 90.0f, "TYPE CV", 6, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
 
-		addLabel(10.0f, 75.0f, "TRIG IN", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 83.0f)), module, ChordGenModule::TRIG_INPUT));
+		addLabel(25.0f, 75.0f, "OCT", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(25.0f, 83.0f)), module, ChordGenModule::OCT_PARAM));
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 83.0f)), module, ChordGenModule::OCT_CV_INPUT));
+		addLabel(10.0f, 75.0f, "OCT CV", 6, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
 
-		addLabel(10.0f, 60.0f, "POLY IN", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 68.0f)), module, ChordGenModule::CHORD_POLY_INPUT));
+		addLabel(10.0f, 60.0f, "TRIG IN", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 68.0f)), module, ChordGenModule::TRIG_INPUT));
 
-		addLabel(30.0f, 36.0f, "CHORD", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		auto* chordDisplay = createWidget<ChordTextDisplay>(mm2px(Vec(16.0f, 40.5f)));
-		chordDisplay->box.size = mm2px(Vec(28.0f, 7.0f));
+		addLabel(10.0f, 45.0f, "POLY IN", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 53.0f)), module, ChordGenModule::CHORD_POLY_INPUT));
+
+		addLabel(30.0f, 35.0f, "CHORD", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		auto* chordDisplay = createWidget<ChordTextDisplay>(mm2px(Vec(20.2f, 38.5f)));
+		chordDisplay->box.size = mm2px(Vec(19.6f, 7.0f));
 		chordDisplay->getText = [module]() {
 			if (!module) return std::string("-");
 			return module->chordTypeDisplay;
 		};
 		addChild(chordDisplay);
 
-		addLabel(30.0f, 49.0f, "NOTES", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		auto* notesDisplay = createWidget<ChordTextDisplay>(mm2px(Vec(16.0f, 53.5f)));
-		notesDisplay->box.size = mm2px(Vec(28.0f, 7.0f));
+		addLabel(30.0f, 48.0f, "NOTES", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		auto* notesDisplay = createWidget<ChordTextDisplay>(mm2px(Vec(20.2f, 51.5f)));
+		notesDisplay->box.size = mm2px(Vec(19.6f, 7.0f));
 		notesDisplay->getText = [module]() {
 			if (!module) return std::string("-");
 			return module->voicingDisplay;
