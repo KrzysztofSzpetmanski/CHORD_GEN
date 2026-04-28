@@ -221,6 +221,7 @@ struct VoicingChoice {
 	bool ok = false;
 	std::array<int, 4> midi{{60, 64, 67, 71}};
 	int span = -1;
+	int gapPenalty = std::numeric_limits<int>::max();
 	int movement = std::numeric_limits<int>::max();
 };
 
@@ -228,6 +229,7 @@ bool isBetterChoice(const VoicingChoice& cand, const VoicingChoice& best) {
 	if (!cand.ok) return false;
 	if (!best.ok) return true;
 	if (cand.span != best.span) return cand.span > best.span;
+	if (cand.gapPenalty != best.gapPenalty) return cand.gapPenalty < best.gapPenalty;
 	if (cand.movement != best.movement) return cand.movement < best.movement;
 	const int candCenter = cand.midi[0] + cand.midi[3];
 	const int bestCenter = best.midi[0] + best.midi[3];
@@ -266,6 +268,13 @@ VoicingChoice chooseVoicingPass(
 						cand.ok = true;
 						cand.midi = {{n0, n1, n2, n3}};
 						cand.span = n3 - n0;
+						const int g1 = n1 - n0;
+						const int g2 = n2 - n1;
+						const int g3 = n3 - n2;
+						cand.gapPenalty =
+							std::abs(g1 * 3 - cand.span) +
+							std::abs(g2 * 3 - cand.span) +
+							std::abs(g3 * 3 - cand.span);
 						cand.movement = 0;
 						if (havePrev) {
 							for (int i = 0; i < 4; ++i) {
@@ -504,7 +513,7 @@ struct ChordGenModule : Module {
 	std::array<int, 4> prevVoicingMidi{{60, 64, 67, 71}};
 	bool haveVoicing = false;
 	bool havePrevVoicing = false;
-	bool triggerModeEnabled = true;
+	bool triggerModeEnabled = false;
 	dsp::SchmittTrigger onButtonTrigger;
 	dsp::SchmittTrigger trigTickTrigger;
 
@@ -525,7 +534,7 @@ struct ChordGenModule : Module {
 		configParam(SCALE_PARAM, 0.f, float(SCALE_NAMES.size() - 1), 0.f, "Scale");
 		configParam(ROOT_PARAM, 0.f, 11.f, 0.f, "Root");
 		configParam(RANGE_PARAM, 1.f, 3.f, 2.f, "Range Octaves");
-		configParam(OCT_PARAM, 0.f, 4.f, 2.f, "Start Octave");
+		configParam(OCT_PARAM, -2.f, 3.f, 0.f, "Start Octave");
 		configParam(TYPE_PARAM, 0.f, float(TYPE_NAMES.size() - 1), 0.f, "Chord Type");
 
 		paramQuantities[SCALE_PARAM]->snapEnabled = true;
@@ -574,12 +583,12 @@ struct ChordGenModule : Module {
 	}
 
 	int readStartOctaveValue() {
-		float cvNorm = 0.f;
+		float cvOct = 0.f;
 		if (inputs[OCT_CV_INPUT].isConnected()) {
-			cvNorm = clamp(inputs[OCT_CV_INPUT].getVoltage() / 10.f, -1.f, 1.f);
+			cvOct = clamp(inputs[OCT_CV_INPUT].getVoltage(), -10.f, 10.f);
 		}
-		const float raw = params[OCT_PARAM].getValue() + cvNorm * 4.f;
-		return clampInt(int(std::round(raw)), 0, 4);
+		const float raw = params[OCT_PARAM].getValue() + cvOct;
+		return clampInt(int(std::round(raw)), -2, 3);
 	}
 
 	int readDegreeFromPolyInput(int scaleIndex, int rootPc) {
@@ -621,7 +630,7 @@ struct ChordGenModule : Module {
 
 	void rebuildVoicing(int scaleIndex, int rootPc, int rangeValue, int startOctave, int typeValue, int degree) {
 		const GeneratedChord chord = buildChordForDegree(scaleIndex, degree, typeValue);
-		const int tonicMidi = startOctave * 12 + rootPc;
+		const int tonicMidi = 60 + startOctave * 12 + rootPc;
 		const int chordRootMidi = scaleDegreeToMidi(tonicMidi, scaleIndex, degree);
 
 		std::array<int, 4> tonePcs{};
@@ -630,7 +639,7 @@ struct ChordGenModule : Module {
 		}
 
 		const int targetSpan = rangeValue * 12;
-		int lo = clampInt(startOctave * 12, 0, 120 - targetSpan);
+		int lo = clampInt(60 + startOctave * 12, 0, 127 - targetSpan);
 		const int hi = lo + targetSpan;
 
 		const VoicingChoice choice = chooseBestVoicing(tonePcs, lo, hi, prevVoicingMidi, havePrevVoicing);
@@ -730,6 +739,14 @@ struct ChordGenWidget : ModuleWidget {
 	ChordGenWidget(ChordGenModule* module) {
 		setModule(module);
 		setPanel(createPanel(asset::plugin(pluginInstance, "res/ChordGen.svg")));
+		const float x10 = 10.0f;
+		const float x25 = 25.0f;
+		const float x40 = 40.0f;
+		const float y53 = 53.0f;
+		const float y68 = 68.0f;
+		const float y83 = 83.0f;
+		const float y98 = 98.0f;
+		const float y113 = 113.0f;
 
 		auto addLabel = [this](float xMm,
 					float yMm,
@@ -751,16 +768,16 @@ struct ChordGenWidget : ModuleWidget {
 		addChild(createWidget<ScrewSilver>(Vec(box.size.x - 2.f * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
 		addLabel(6.0f, 6.0f, "CHORD GEN", 11, nvgRGB(0x0b, 0x12, 0x20));
-		auto* buildLabel = createWidget<PanelLabel>(mm2px(Vec(57.0f, 6.5f)));
+		auto* buildLabel = createWidget<PanelLabel>(mm2px(Vec(45.0f, 6.5f)));
 		buildLabel->text = string::f("BUILD %d", kChordGenBuildNumber);
 		buildLabel->fontSize = 7;
 		buildLabel->align = NVG_ALIGN_RIGHT | NVG_ALIGN_TOP;
 		buildLabel->color = nvgRGB(0x33, 0x41, 0x55);
 		addChild(buildLabel);
 
-		addLabel(5.0f, 15.0f, "SCALE", 7);
-		auto* scaleField = createWidget<DropdownField>(mm2px(Vec(5.0f, 18.0f)));
-		scaleField->box.size = mm2px(Vec(25.0f, 8.0f));
+		addLabel(7.0f, 15.0f, "SCALE", 7);
+		auto* scaleField = createWidget<DropdownField>(mm2px(Vec(7.0f, 18.0f)));
+		scaleField->box.size = mm2px(Vec(20.0f, 8.0f));
 		scaleField->title = "Scale";
 		scaleField->optionCount = int(SCALE_NAMES.size());
 		scaleField->getCurrent = [module]() {
@@ -776,9 +793,9 @@ struct ChordGenWidget : ModuleWidget {
 		};
 		addChild(scaleField);
 
-		addLabel(33.0f, 15.0f, "ROOT", 7);
-		auto* rootField = createWidget<DropdownField>(mm2px(Vec(33.0f, 18.0f)));
-		rootField->box.size = mm2px(Vec(22.0f, 8.0f));
+		addLabel(30.0f, 15.0f, "ROOT", 7);
+		auto* rootField = createWidget<DropdownField>(mm2px(Vec(30.0f, 18.0f)));
+		rootField->box.size = mm2px(Vec(12.0f, 8.0f));
 		rootField->title = "Root";
 		rootField->optionCount = int(ROOT_NAMES.size());
 		rootField->getCurrent = [module]() {
@@ -794,31 +811,31 @@ struct ChordGenWidget : ModuleWidget {
 		};
 		addChild(rootField);
 
-		addLabel(25.0f, 60.0f, "ON", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addParam(createParamCentered<LEDButton>(mm2px(Vec(25.0f, 68.0f)), module, ChordGenModule::ON_PARAM));
-		addChild(createLightCentered<MediumLight<WhiteLight> >(mm2px(Vec(25.0f, 68.0f)), module, ChordGenModule::ON_LIGHT));
+		addLabel(x25, 60.0f, "ON", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addParam(createParamCentered<LEDButton>(mm2px(Vec(x25, y68)), module, ChordGenModule::ON_PARAM));
+		addChild(createLightCentered<MediumLight<WhiteLight> >(mm2px(Vec(x25, y68)), module, ChordGenModule::ON_LIGHT));
 
 		// Grid-aligned placement (10mm rows/columns) for manual layout iteration.
-		addLabel(25.0f, 105.0f, "RANGE", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(25.0f, 113.0f)), module, ChordGenModule::RANGE_PARAM));
-		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 113.0f)), module, ChordGenModule::RANGE_CV_INPUT));
-		addLabel(10.0f, 105.0f, "RNG CV", 6, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addLabel(x25, 105.0f, "RANGE", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(x25, y113)), module, ChordGenModule::RANGE_PARAM));
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(x10, y113)), module, ChordGenModule::RANGE_CV_INPUT));
+		addLabel(x10, 105.0f, "RNG CV", 6, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
 
-		addLabel(25.0f, 90.0f, "TYPE", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(25.0f, 98.0f)), module, ChordGenModule::TYPE_PARAM));
-		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 98.0f)), module, ChordGenModule::TYPE_CV_INPUT));
-		addLabel(10.0f, 90.0f, "TYPE CV", 6, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addLabel(x25, 90.0f, "TYPE", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(x25, y98)), module, ChordGenModule::TYPE_PARAM));
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(x10, y98)), module, ChordGenModule::TYPE_CV_INPUT));
+		addLabel(x10, 90.0f, "TYPE CV", 6, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
 
-		addLabel(25.0f, 75.0f, "OCT", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(25.0f, 83.0f)), module, ChordGenModule::OCT_PARAM));
-		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 83.0f)), module, ChordGenModule::OCT_CV_INPUT));
-		addLabel(10.0f, 75.0f, "OCT CV", 6, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addLabel(x25, 75.0f, "OCT", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(x25, y83)), module, ChordGenModule::OCT_PARAM));
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(x10, y83)), module, ChordGenModule::OCT_CV_INPUT));
+		addLabel(x10, 75.0f, "OCT CV", 6, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
 
-		addLabel(10.0f, 60.0f, "TRIG IN", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 68.0f)), module, ChordGenModule::TRIG_INPUT));
+		addLabel(x10, 60.0f, "TRIG IN", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(x10, y68)), module, ChordGenModule::TRIG_INPUT));
 
-		addLabel(10.0f, 45.0f, "POLY IN", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0f, 53.0f)), module, ChordGenModule::CHORD_POLY_INPUT));
+		addLabel(x10, 45.0f, "POLY IN", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addInput(createInputCentered<PJ301MPort>(mm2px(Vec(x10, y53)), module, ChordGenModule::CHORD_POLY_INPUT));
 
 		addLabel(30.0f, 35.0f, "CHORD", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
 		auto* chordDisplay = createWidget<ChordTextDisplay>(mm2px(Vec(20.2f, 38.5f)));
@@ -838,15 +855,15 @@ struct ChordGenWidget : ModuleWidget {
 		};
 		addChild(notesDisplay);
 
-		addLabel(50.0f, 105.0f, "V1", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(50.0f, 113.0f)), module, ChordGenModule::VOICE1_OUTPUT));
-		addLabel(50.0f, 90.0f, "V2", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(50.0f, 98.0f)), module, ChordGenModule::VOICE2_OUTPUT));
-		addLabel(50.0f, 75.0f, "V3", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(50.0f, 83.0f)), module, ChordGenModule::VOICE3_OUTPUT));
-		addLabel(50.0f, 60.0f, "V4", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-		addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(50.0f, 68.0f)), module, ChordGenModule::VOICE4_OUTPUT));
-	}
-};
+		addLabel(x40, 60.0f, "V1", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(x40, y68)), module, ChordGenModule::VOICE1_OUTPUT));
+		addLabel(x40, 75.0f, "V2", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(x40, y83)), module, ChordGenModule::VOICE2_OUTPUT));
+		addLabel(x40, 90.0f, "V3", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(x40, y98)), module, ChordGenModule::VOICE3_OUTPUT));
+		addLabel(x40, 105.0f, "V4", 7, nvgRGB(0x0f, 0x17, 0x2a), NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+		addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(x40, y113)), module, ChordGenModule::VOICE4_OUTPUT));
+		}
+	};
 
-Model* modelChordGen = createModel<ChordGenModule, ChordGenWidget>("ChordGen");
+Model* modelChordGen = createModel<ChordGenModule, ChordGenWidget>("CHORD_GEN");

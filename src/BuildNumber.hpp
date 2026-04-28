@@ -1,3 +1,3 @@
 #pragma once
 
-constexpr int kChordGenBuildNumber = 124;
+constexpr int kChordGenBuildNumber = 130;
